@@ -109,7 +109,7 @@ do
     })
 
     FeaturesBox:Section({
-        Title            = "ESP Murderer, Sheriff, Innocent, Gun Drop highlights\nCombat  Kill Aura,Auto Shoot, Aimbot, Knife Throw\nMovement  Fly, Noclip, Speed Glitch, Anti Fling\nGeneral Coin TP, Round Timer, Player Actions\nPlayer  Walk Speed, Jump Height, Anti AFK, God Mode\nUtility   Rejoin, Copy Game / Job ID",
+        Title            = "ESP Murderer, Sheriff, Innocent, Gun Drop highlights\nCombat  Kill Aura,Auto Shoot, Aimbot, Knife Throw\nMovement  Fly, Speed Glitch, Anti Fling\nGeneral Coin TP, Round Timer, Player Actions\nPlayer  Walk Speed, Jump Height, Anti AFK, God Mode\nUtility   Rejoin, Copy Game / Job ID",
         TextSize         = 13,
         TextTransparency = 0.25,
         FontWeight       = Enum.FontWeight.Medium,
@@ -403,11 +403,11 @@ local function clearHitboxes()
     for part, data in pairs(hitboxParts) do
         pcall(function()
             if part and part.Parent then
-                part.Size     = data.originalSize
-                part.Material = data.originalMaterial
-                part.Color    = data.originalColor
+                part.Size         = data.originalSize
+                part.Material     = data.originalMaterial
+                part.Color        = data.originalColor
                 part.Transparency = data.originalTransparency
-                part.CanCollide   = data.originalCanCollide
+                part.CanCollide   = data.originalCanCollide  -- restore original collision
             end
         end)
     end
@@ -428,7 +428,7 @@ local function applyHitbox(player)
         originalCanCollide   = hrp.CanCollide,
     }
     hrp.Size        = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
-    hrp.CanCollide  = false
+    hrp.CanCollide  = false  -- always non-collidable so expanded hitbox doesn't block local player
     if hitboxEnabled then
         -- visible mode
         hrp.Material     = Enum.Material.Neon
@@ -436,6 +436,7 @@ local function applyHitbox(player)
         hrp.Transparency = 0.35
     else
         -- invisible expanded hitbox
+        hrp.Material     = Enum.Material.SmoothPlastic
         hrp.Transparency = 1
     end
 end
@@ -1525,7 +1526,6 @@ UtilSection:Toggle({
 PlayerTab:Space({ Columns = 3 })
 
 -- ── Section: Movement ─────────────────────────────────────────
-local noclipConn = nil
 local MovementSection = PlayerTab:Section({
     Title     = "Movement",
     Icon      = "ghost",
@@ -1533,39 +1533,6 @@ local MovementSection = PlayerTab:Section({
     BoxBorder = true,
     Opened    = true,
 })
-
-MovementSection:Toggle({
-    Title = "Noclip",
-    Desc  = "Walk through walls",
-    Icon  = "ghost",
-    Value = false,
-    Type  = "Checkbox",
-    Callback = function(state)
-        if state then
-            noclipConn = RunService.Stepped:Connect(function()
-                local char = localplayer.Character
-                if not char then return end
-                for _, part in ipairs(char:GetDescendants()) do
-                    if part:IsA("BasePart") then
-                        part.CanCollide = false
-                    end
-                end
-            end)
-        else
-            if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
-            local char = localplayer.Character
-            if char then
-                for _, part in ipairs(char:GetDescendants()) do
-                    if part:IsA("BasePart") then
-                        part.CanCollide = true
-                    end
-                end
-            end
-        end
-    end,
-})
-
-MovementSection:Space()
 
 -- Anti Fling
 local antiFlingLastPos       = Vector3.zero
