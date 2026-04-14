@@ -897,12 +897,27 @@ local function killSheriff()
 end
 
 -- Kill Aura heartbeat loop
+-- ensureKnifeEquipped() yields (task.wait inside), so we never call it inside Heartbeat.
+-- Instead we check synchronously; if no knife, skip this tick.
 local killAuraDebounce = false
 RunService.Heartbeat:Connect(function()
     if not killAuraConn then return end
     if killAuraDebounce then return end
     if findMurderer() ~= localplayer then return end
-    local myHRP = localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart")
+    local char = localplayer.Character
+    if not char then return end
+    -- Only act if knife is already equipped (no yielding calls inside Heartbeat)
+    local knife = char:FindFirstChild("Knife")
+    if not knife then
+        -- Try to equip from backpack in a separate thread so Heartbeat doesn't stall
+        task.spawn(function()
+            local bp = localplayer.Backpack:FindFirstChild("Knife")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if bp and hum then hum:EquipTool(bp) end
+        end)
+        return
+    end
+    local myHRP = char:FindFirstChild("HumanoidRootPart")
     if not myHRP then return end
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= localplayer and player.Character then
@@ -911,11 +926,7 @@ RunService.Heartbeat:Connect(function()
                 killAuraDebounce = true
                 hrp.Anchored = true
                 hrp.CFrame   = myHRP.CFrame + myHRP.CFrame.LookVector * 2
-                if localplayer.Character and localplayer.Character:FindFirstChild("Knife") then
-                    localplayer.Character.Knife.Stab:FireServer("Slash")
-                elseif ensureKnifeEquipped() then
-                    localplayer.Character.Knife.Stab:FireServer("Slash")
-                end
+                knife.Stab:FireServer("Slash")
                 task.delay(1, function()
                     if hrp and hrp.Parent then hrp.Anchored = false end
                     killAuraDebounce = false
@@ -935,34 +946,31 @@ task.spawn(function()
     end
 end)
 
--- Auto Shoot Murderer loop
-task.spawn(function()
-    while task.wait(1) do
-        if autoShootConn and findSheriff() == localplayer then
-            repeat
-                task.wait(0.05)
-                local murderer = findMurderer()
-                if not murderer then break end
-                local murdHRP = murderer.Character and murderer.Character:FindFirstChild("HumanoidRootPart")
-                local myHRP   = localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart")
-                if not murdHRP or not myHRP then break end
-                local rayParams = RaycastParams.new()
-                rayParams.FilterType = Enum.RaycastFilterType.Exclude
-                rayParams.FilterDescendantsInstances = { localplayer.Character, murderer.Character }
-                local dir = murdHRP.Position - myHRP.Position
-                local hit = workspace:Raycast(myHRP.Position, dir, rayParams)
-                -- fire if line of sight is clear (no wall between us)
-                if not hit then
-                    if not ensureGunEquipped() then break end
-                    local predicted = getPredictedPosition(murderer, shootOffset)
-                    local myChar = localplayer.Character
-                    if myChar and myChar:FindFirstChild("Gun") then
-                        pcall(function()
-                            myChar.Gun.KnifeLocal.CreateBeam.RemoteFunction:InvokeServer(1, predicted, "AH2")
-                        end)
-                    end
-                end
-            until not autoShootConn or findSheriff() ~= localplayer
+-- Auto Shoot Murderer loop (throttled to avoid freezing)
+local lastAutoShot = 0
+RunService.Heartbeat:Connect(function()
+    if not autoShootConn then return end
+    if findSheriff() ~= localplayer then return end
+    local now = tick()
+    if now - lastAutoShot < 0.35 then return end  -- max ~3 shots/sec, not 20
+    lastAutoShot = now
+    local murderer = findMurderer()
+    if not murderer then return end
+    local murdHRP = murderer.Character and murderer.Character:FindFirstChild("HumanoidRootPart")
+    local myHRP   = localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart")
+    if not murdHRP or not myHRP then return end
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = { localplayer.Character, murderer.Character }
+    local dir = murdHRP.Position - myHRP.Position
+    local hit = workspace:Raycast(myHRP.Position, dir, rayParams)
+    if not hit then
+        local myChar = localplayer.Character
+        if myChar and myChar:FindFirstChild("Gun") then
+            local predicted = getPredictedPosition(murderer, shootOffset)
+            pcall(function()
+                myChar.Gun.KnifeLocal.CreateBeam.RemoteFunction:InvokeServer(1, predicted, "AH2")
+            end)
         end
     end
 end)
@@ -1575,7 +1583,12 @@ MovementSection:Toggle({
         if state then
             antiFlingDetected = {}
             -- detect and neutralize other players flinging
+            -- Throttled to every 0.1s; GetDescendants every frame was causing freezes
+            local _antiFlingThrottle = 0
             antiFlingDetectionConn = RunService.Heartbeat:Connect(function()
+                local _now = tick()
+                if _now - _antiFlingThrottle < 0.1 then return end
+                _antiFlingThrottle = _now
                 for _, pl in ipairs(Players:GetPlayers()) do
                     if pl == localplayer then continue end
                     local char = pl.Character
@@ -1587,29 +1600,31 @@ MovementSection:Toggle({
                             antiFlingDetected[pl.Name] = true
                             WindUI:Notify({ Title = "Anti Fling", Content = "Flinger detected: " .. pl.Name, Icon = "shield-check" })
                         end
-                        for _, p in ipairs(char:GetDescendants()) do
-                            if p:IsA("BasePart") then
-                                p.CanCollide = false
-                                p.AssemblyAngularVelocity = Vector3.zero
-                                p.AssemblyLinearVelocity  = Vector3.zero
-                                p.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0)
-                            end
-                        end
+                        -- Only zero primary part instead of all descendants (was very expensive)
+                        pp.CanCollide = false
+                        pp.AssemblyAngularVelocity = Vector3.zero
+                        pp.AssemblyLinearVelocity  = Vector3.zero
                     end
                 end
             end)
-            -- neutralize self if flung
+            -- neutralize self if flung (throttled; notifying every frame caused freezes)
+            local _antiFlingNotifCooldown = 0
             antiFlingNeutralConn = RunService.Heartbeat:Connect(function()
                 local char = localplayer.Character
                 local pp   = char and char.PrimaryPart
                 if not pp then return end
                 if pp.AssemblyLinearVelocity.Magnitude  > 250
                 or pp.AssemblyAngularVelocity.Magnitude > 250 then
-                    WindUI:Notify({ Title = "Anti Fling", Content = "You were flung! Neutralizing...", Icon = "shield-check" })
                     pp.AssemblyLinearVelocity  = Vector3.zero
                     pp.AssemblyAngularVelocity = Vector3.zero
                     if antiFlingLastPos ~= Vector3.zero then
                         pp.CFrame = CFrame.new(antiFlingLastPos)
+                    end
+                    -- Only notify once per fling event (not every frame)
+                    local _n = tick()
+                    if _n - _antiFlingNotifCooldown > 2 then
+                        _antiFlingNotifCooldown = _n
+                        WindUI:Notify({ Title = "Anti Fling", Content = "You were flung! Neutralizing...", Icon = "shield-check" })
                     end
                 else
                     antiFlingLastPos = pp.Position
@@ -1717,10 +1732,10 @@ EspSection:Toggle({
     end,
 })
 
--- Auto-refresh ESP every 3 seconds while enabled so it keeps up without manual toggle
+-- Auto-refresh ESP every 8 seconds (was 3s — too frequent, caused freezes)
 task.spawn(function()
     while true do
-        task.wait(3)
+        task.wait(8)
         if ESPEnabled then
             pcall(reloadESP)
         end
